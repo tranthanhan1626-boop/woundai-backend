@@ -1,0 +1,8 @@
+{
+  "version": "v1.0",
+  "trained_at": "2026-05-09T11:18:04.561916",
+  "mae_days": 9.61,
+  "r2_score": 0.767,
+  "is_current": true,
+  "has_shap": true
+}
