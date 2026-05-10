@@ -377,6 +377,19 @@ def get_wounds():
         return {"success": True, "wounds": wounds}
     except Exception as e:
         raise HTTPException(500, f"Lỗi lấy danh sách vết thương: {str(e)}")
+@app.get("/wounds/{wound_id}/visits")
+def get_visits(wound_id: str):
+    """Lấy danh sách các lần khám của một vết thương"""
+    try:
+        visits = supabase.table("visits")\
+            .select("id, visit_date, length_cm, width_cm, depth_cm, dressing_per_week, nurse_type")\
+            .eq("wound_id", wound_id)\
+            .order("visit_date", desc=True)\
+            .execute().data
+
+        return {"success": True, "visits": visits}
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi lấy lịch sử khám: {str(e)}")
 if __name__ == "__main__":
     import uvicorn
     print("\n🚀 WoundAI API đang khởi động...")
