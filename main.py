@@ -351,7 +351,32 @@ def stats():
     except Exception as e:
         raise HTTPException(500, str(e))
 
+@app.get("/wounds")
+def get_wounds():
+    """Lấy danh sách tất cả vết thương + tên bệnh nhân để hiển thị lịch sử"""
+    try:
+        wounds = supabase.table("wounds")\
+            .select("id, patient_id, wound_type, location, created_date, actual_healed_date, actual_days, notes")\
+            .order("created_date", desc=True)\
+            .execute().data
 
+        patients = supabase.table("patients")\
+            .select("id, full_name")\
+            .execute().data
+        patient_map = {p["id"]: p["full_name"] for p in patients}
+
+        for w in wounds:
+            w["patient_name"] = patient_map.get(w["patient_id"], "Không rõ")
+            if w["actual_healed_date"]:
+                w["status"] = "healed"
+            else:
+                created = date.fromisoformat(str(w["created_date"]))
+                w["days_so_far"] = (date.today() - created).days
+                w["status"] = "active"
+
+        return {"success": True, "wounds": wounds}
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi lấy danh sách vết thương: {str(e)}")
 if __name__ == "__main__":
     import uvicorn
     print("\n🚀 WoundAI API đang khởi động...")
