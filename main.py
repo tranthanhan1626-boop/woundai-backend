@@ -409,6 +409,48 @@ def get_visits(wound_id: str):
         return {"success": True, "visits": visits}
     except Exception as e:
         raise HTTPException(500, f"Lỗi lấy lịch sử khám: {str(e)}")
+    @app.post("/patients/{patient_id}/wounds")
+def add_wound(patient_id: str, data: NewCaseInput):
+    """Thêm vết thương mới cho bệnh nhân đã có"""
+    try:
+        # Kiểm tra patient tồn tại
+        p_res = supabase.table("patients")\
+            .select("id")\
+            .eq("id", patient_id)\
+            .execute()
+        if not p_res.data:
+            raise HTTPException(404, "Không tìm thấy bệnh nhân")
+
+        # Tạo wound mới
+        w_res = supabase.table("wounds").insert({
+            "patient_id":   patient_id,
+            "wound_type":   data.wound_type,
+            "location":     data.location,
+            "created_date": str(date.today()),
+        }).execute()
+        wound_id = w_res.data[0]["id"]
+
+        # Tạo visit đầu tiên
+        supabase.table("visits").insert({
+            "wound_id":          wound_id,
+            "visit_date":        str(date.today()),
+            "length_cm":         data.length_cm,
+            "width_cm":          data.width_cm,
+            "depth_cm":          data.depth_cm,
+            "dressing_per_week": data.dressing_per_week,
+            "nurse_type":        data.nurse_type,
+        }).execute()
+
+        return {
+            "success":    True,
+            "wound_id":   wound_id,
+            "patient_id": patient_id,
+            "message":    "Đã thêm vết thương mới cho bệnh nhân",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi thêm vết thương: {str(e)}")
 if __name__ == "__main__":
     import uvicorn
     print("\n🚀 WoundAI API đang khởi động...")
