@@ -397,3 +397,69 @@ if __name__ == "__main__":
     print("   Tài liệu API:  http://localhost:8000/docs")
     print("   Nhấn Ctrl+C để dừng\n")
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+
+@app.get("/patients/{patient_id}")
+def get_patient(patient_id: str):
+    """Tìm bệnh nhân theo ID"""
+    try:
+        p_res = supabase.table("patients")\
+            .select("id, full_name, age_group, diabetes")\
+            .eq("id", patient_id)\
+            .execute()
+        if not p_res.data:
+            raise HTTPException(404, "Không tìm thấy bệnh nhân")
+        patient = p_res.data[0]
+
+        # Lấy danh sách vết thương của bệnh nhân này
+        w_res = supabase.table("wounds")\
+            .select("id, wound_type, location, created_date, actual_healed_date, actual_days")\
+            .eq("patient_id", patient_id)\
+            .order("created_date", desc=True)\
+            .execute()
+        wounds = w_res.data or []
+        for w in wounds:
+            if w.get("actual_healed_date"):
+                w["status"] = "healed"
+            else:
+                created = date.fromisoformat(str(w["created_date"]))
+                w["days_so_far"] = (date.today() - created).days
+                w["status"] = "active"
+
+        return {"success": True, "patient": patient, "wounds": wounds}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi tìm bệnh nhân: {str(e)}")
+
+
+@app.post("/wounds/{wound_id}/visits")
+def add_visit(wound_id: str, data: WoundInput):
+    """Thêm lần thăm khám mới vào vết thương đang điều trị"""
+    try:
+        # Kiểm tra wound có tồn tại không
+        w_res = supabase.table("wounds")\
+            .select("id, actual_healed_date")\
+            .eq("id", wound_id)\
+            .execute()
+        if not w_res.data:
+            raise HTTPException(404, "Không tìm thấy vết thương")
+        if w_res.data[0].get("actual_healed_date"):
+            raise HTTPException(400, "Vết thương này đã lành, không thể thêm lần khám mới")
+
+        # Thêm visit mới
+        supabase.table("visits").insert({
+            "wound_id":          wound_id,
+            "visit_date":        str(date.today()),
+            "length_cm":         data.length_cm,
+            "width_cm":          data.width_cm,
+            "depth_cm":          data.depth_cm,
+            "dressing_per_week": data.dressing_per_week,
+            "nurse_type":        data.nurse_type,
+        }).execute()
+
+        return {"success": True, "message": "Đã thêm lần khám mới"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi thêm lần khám: {str(e)}")
