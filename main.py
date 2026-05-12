@@ -423,9 +423,9 @@ def get_visits(wound_id: str):
     """Lấy danh sách các lần khám của một vết thương"""
     try:
         visits = supabase.table("visits")\
-            .select("id, visit_date, length_cm, width_cm, depth_cm, dressing_per_week, nurse_type, predicted_days, confidence_low, confidence_high, risk_level, risk_label")\
+            .select("id, visit_date, created_at, length_cm, width_cm, depth_cm, dressing_per_week, nurse_type, predicted_days, confidence_low, confidence_high, risk_level, risk_label")\
             .eq("wound_id", wound_id)\
-            .order("visit_date", desc=True)\
+            .order("created_at", desc=False)\
             .execute().data
 
         return {"success": True, "visits": visits}
