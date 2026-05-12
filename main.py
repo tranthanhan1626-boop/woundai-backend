@@ -235,6 +235,25 @@ def predict(data: WoundInput):
     confidence_high= int(predicted_days * 1.20)
     risk           = get_risk(predicted_days)
     shap_result    = build_shap_result(X_df)
+    # Lưu kết quả dự báo vào visit gần nhất
+    if data.wound_id and len(data.wound_id) > 10:
+        try:
+            latest = supabase.table("visits")\
+                .select("id")\
+                .eq("wound_id", data.wound_id)\
+                .order("visit_date", desc=True)\
+                .limit(1)\
+                .execute()
+            if latest.data:
+                supabase.table("visits").update({
+                    "predicted_days":  predicted_days,
+                    "confidence_low":  confidence_low,
+                    "confidence_high": confidence_high,
+                    "risk_level":      risk["level"],
+                    "risk_label":      risk["label"],
+                }).eq("id", latest.data[0]["id"]).execute()
+        except:
+            pass
 
     if data.wound_id and len(data.wound_id) > 10:
         try:
