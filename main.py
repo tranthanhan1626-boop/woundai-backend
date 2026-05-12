@@ -57,20 +57,17 @@ class WoundInput(BaseModel):
 
 
 class HealConfirmInput(BaseModel):
-    wound_id:         str           # UUID của vết thương
-    actual_healed_date: str         # Ngày lành thật "YYYY-MM-DD"
-    nurse_note:       Optional[str] = ""  # Ghi chú của điều dưỡng
+    wound_id:           str
+    actual_healed_date: str
+    nurse_note:         Optional[str] = ""
 
 
 class NewCaseInput(BaseModel):
     """Nhập ca mới — tạo patient + wound + visit cùng lúc"""
-    # Thông tin bệnh nhân
     patient_name:      str
     age_group:         str
     diabetes:          bool
     gender:            str = "unknown"
-
-    # Thông tin vết thương
     wound_type:        str
     location:          str = ""
     length_cm:         float
@@ -138,7 +135,6 @@ def build_shap_result(X_df: pd.DataFrame) -> dict:
 
 
 def get_retrain_status() -> dict:
-    """Trạng thái tiến độ đến lần retrain tiếp theo"""
     try:
         with open("model_registry.json") as f:
             reg = json.load(f)
@@ -172,28 +168,23 @@ def root():
 def health():
     return {
         "server":   "ok",
-        "model":    "loaded" if model    else "not loaded",
+        "model":    "loaded" if model     else "not loaded",
         "shap":     "loaded" if explainer else "not loaded",
     }
 
 
 @app.post("/cases")
 def create_case(data: NewCaseInput):
-    """
-    Tạo ca mới: patient + wound + visit đầu tiên.
-    Trả về wound_id để dùng cho /predict và /confirm-healed.
-    """
+    """Tạo ca mới: patient + wound + visit đầu tiên."""
     try:
-        # 1. Tạo patient
         p_res = supabase.table("patients").insert({
-            "full_name":   data.patient_name,
-            "age_group":   data.age_group,
-            "gender":      data.gender,
-            "diabetes":    data.diabetes,
+            "full_name": data.patient_name,
+            "age_group": data.age_group,
+            "gender":    data.gender,
+            "diabetes":  data.diabetes,
         }).execute()
         patient_id = p_res.data[0]['id']
 
-        # 2. Tạo wound
         w_res = supabase.table("wounds").insert({
             "patient_id":   patient_id,
             "wound_type":   data.wound_type,
@@ -202,15 +193,14 @@ def create_case(data: NewCaseInput):
         }).execute()
         wound_id = w_res.data[0]['id']
 
-        # 3. Tạo visit đầu tiên
         supabase.table("visits").insert({
-            "wound_id":           wound_id,
-            "visit_date":         str(date.today()),
-            "length_cm":          data.length_cm,
-            "width_cm":           data.width_cm,
-            "depth_cm":           data.depth_cm,
-            "dressing_per_week":  data.dressing_per_week,
-            "nurse_type":         data.nurse_type,
+            "wound_id":          wound_id,
+            "visit_date":        str(date.today()),
+            "length_cm":         data.length_cm,
+            "width_cm":          data.width_cm,
+            "depth_cm":          data.depth_cm,
+            "dressing_per_week": data.dressing_per_week,
+            "nurse_type":        data.nurse_type,
         }).execute()
 
         return {
@@ -223,19 +213,60 @@ def create_case(data: NewCaseInput):
         raise HTTPException(500, f"Lỗi tạo ca: {str(e)}")
 
 
+@app.post("/patients/{patient_id}/wounds")
+def add_wound(patient_id: str, data: NewCaseInput):
+    """Thêm vết thương mới cho bệnh nhân đã có"""
+    try:
+        p_res = supabase.table("patients")\
+            .select("id")\
+            .eq("id", patient_id)\
+            .execute()
+        if not p_res.data:
+            raise HTTPException(404, "Không tìm thấy bệnh nhân")
+
+        w_res = supabase.table("wounds").insert({
+            "patient_id":   patient_id,
+            "wound_type":   data.wound_type,
+            "location":     data.location,
+            "created_date": str(date.today()),
+        }).execute()
+        wound_id = w_res.data[0]["id"]
+
+        supabase.table("visits").insert({
+            "wound_id":          wound_id,
+            "visit_date":        str(date.today()),
+            "length_cm":         data.length_cm,
+            "width_cm":          data.width_cm,
+            "depth_cm":          data.depth_cm,
+            "dressing_per_week": data.dressing_per_week,
+            "nurse_type":        data.nurse_type,
+        }).execute()
+
+        return {
+            "success":    True,
+            "wound_id":   wound_id,
+            "patient_id": patient_id,
+            "message":    "Đã thêm vết thương mới cho bệnh nhân",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi thêm vết thương: {str(e)}")
+
+
 @app.post("/predict")
 def predict(data: WoundInput):
     """Dự báo + SHAP giải thích cho điều dưỡng"""
     if model is None or explainer is None:
         raise HTTPException(503, "Mô hình chưa load.")
 
-    X_df           = preprocess(data)
-    predicted_days = int(round(model.predict(X_df)[0]))
-    confidence_low = max(5, int(predicted_days * 0.80))
-    confidence_high= int(predicted_days * 1.20)
-    risk           = get_risk(predicted_days)
-    shap_result    = build_shap_result(X_df)
-    # Lưu kết quả dự báo vào visit gần nhất
+    X_df            = preprocess(data)
+    predicted_days  = int(round(model.predict(X_df)[0]))
+    confidence_low  = max(5, int(predicted_days * 0.80))
+    confidence_high = int(predicted_days * 1.20)
+    risk            = get_risk(predicted_days)
+    shap_result     = build_shap_result(X_df)
+
     if data.wound_id and len(data.wound_id) > 10:
         try:
             latest = supabase.table("visits")\
@@ -285,12 +316,8 @@ def predict(data: WoundInput):
 
 @app.post("/confirm-healed")
 def confirm_healed(data: HealConfirmInput):
-    """
-    Điều dưỡng xác nhận vết thương đã lành thật.
-    Lưu actual_healed_date → tính actual_days → dùng để retrain.
-    """
+    """Điều dưỡng xác nhận vết thương đã lành thật."""
     try:
-        # Lấy ngày tạo vết thương
         wound = supabase.table("wounds")\
             .select("created_date, actual_healed_date")\
             .eq("id", data.wound_id)\
@@ -303,15 +330,13 @@ def confirm_healed(data: HealConfirmInput):
         if w.get('actual_healed_date'):
             return {"success": False, "message": "Vết thương này đã được xác nhận lành trước đó"}
 
-        # Tính số ngày lành thật
-        created  = date.fromisoformat(str(w['created_date']))
-        healed   = date.fromisoformat(data.actual_healed_date)
+        created     = date.fromisoformat(str(w['created_date']))
+        healed      = date.fromisoformat(data.actual_healed_date)
         actual_days = (healed - created).days
 
         if actual_days < 0:
             raise HTTPException(400, "Ngày lành không thể trước ngày tạo vết thương")
 
-        # Cập nhật vào database
         supabase.table("wounds").update({
             "actual_healed_date": data.actual_healed_date,
             "actual_days":        actual_days,
@@ -319,17 +344,14 @@ def confirm_healed(data: HealConfirmInput):
             "updated_at":         datetime.now().isoformat(),
         }).eq("id", data.wound_id).execute()
 
-        # Kiểm tra có đủ 200 ca mới để trigger retrain không
-        retrain_status = get_retrain_status()
+        retrain_status  = get_retrain_status()
         trigger_retrain = retrain_status['new_cases'] >= 200
-
-        # Nếu đủ → chạy retrain ngay
         retrain_message = ""
         if trigger_retrain:
             try:
                 from auto_retrain import run as do_retrain
                 success = do_retrain()
-                retrain_message = f"✅ Đã train lại mô hình mới!" if success else "ℹ️ Mô hình cũ vẫn tốt hơn, giữ nguyên."
+                retrain_message = "✅ Đã train lại mô hình mới!" if success else "ℹ️ Mô hình cũ vẫn tốt hơn, giữ nguyên."
             except Exception as e:
                 retrain_message = f"⚠️ Retrain lỗi: {str(e)}"
 
@@ -350,7 +372,6 @@ def confirm_healed(data: HealConfirmInput):
 
 @app.get("/retrain-status")
 def retrain_status():
-    """Trạng thái tiến độ đến lần retrain tiếp theo"""
     return get_retrain_status()
 
 
@@ -370,18 +391,17 @@ def stats():
     except Exception as e:
         raise HTTPException(500, str(e))
 
+
 @app.get("/wounds")
 def get_wounds():
-    """Lấy danh sách tất cả vết thương + tên bệnh nhân để hiển thị lịch sử"""
+    """Lấy danh sách tất cả vết thương + tên bệnh nhân"""
     try:
         wounds = supabase.table("wounds")\
             .select("id, patient_id, wound_type, location, created_date, actual_healed_date, actual_days, notes")\
             .order("created_date", desc=True)\
             .execute().data
 
-        patients = supabase.table("patients")\
-            .select("id, full_name")\
-            .execute().data
+        patients    = supabase.table("patients").select("id, full_name").execute().data
         patient_map = {p["id"]: p["full_name"] for p in patients}
 
         for w in wounds:
@@ -396,12 +416,14 @@ def get_wounds():
         return {"success": True, "wounds": wounds}
     except Exception as e:
         raise HTTPException(500, f"Lỗi lấy danh sách vết thương: {str(e)}")
+
+
 @app.get("/wounds/{wound_id}/visits")
 def get_visits(wound_id: str):
     """Lấy danh sách các lần khám của một vết thương"""
     try:
         visits = supabase.table("visits")\
-            .select("id, visit_date, length_cm, width_cm, depth_cm, dressing_per_week, nurse_type")\
+            .select("id, visit_date, length_cm, width_cm, depth_cm, dressing_per_week, nurse_type, predicted_days, confidence_low, confidence_high, risk_level, risk_label")\
             .eq("wound_id", wound_id)\
             .order("visit_date", desc=True)\
             .execute().data
@@ -409,55 +431,6 @@ def get_visits(wound_id: str):
         return {"success": True, "visits": visits}
     except Exception as e:
         raise HTTPException(500, f"Lỗi lấy lịch sử khám: {str(e)}")
-    @app.post("/patients/{patient_id}/wounds")
-def add_wound(patient_id: str, data: NewCaseInput):
-    """Thêm vết thương mới cho bệnh nhân đã có"""
-    try:
-        # Kiểm tra patient tồn tại
-        p_res = supabase.table("patients")\
-            .select("id")\
-            .eq("id", patient_id)\
-            .execute()
-        if not p_res.data:
-            raise HTTPException(404, "Không tìm thấy bệnh nhân")
-
-        # Tạo wound mới
-        w_res = supabase.table("wounds").insert({
-            "patient_id":   patient_id,
-            "wound_type":   data.wound_type,
-            "location":     data.location,
-            "created_date": str(date.today()),
-        }).execute()
-        wound_id = w_res.data[0]["id"]
-
-        # Tạo visit đầu tiên
-        supabase.table("visits").insert({
-            "wound_id":          wound_id,
-            "visit_date":        str(date.today()),
-            "length_cm":         data.length_cm,
-            "width_cm":          data.width_cm,
-            "depth_cm":          data.depth_cm,
-            "dressing_per_week": data.dressing_per_week,
-            "nurse_type":        data.nurse_type,
-        }).execute()
-
-        return {
-            "success":    True,
-            "wound_id":   wound_id,
-            "patient_id": patient_id,
-            "message":    "Đã thêm vết thương mới cho bệnh nhân",
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Lỗi thêm vết thương: {str(e)}")
-if __name__ == "__main__":
-    import uvicorn
-    print("\n🚀 WoundAI API đang khởi động...")
-    print("   Địa chỉ local: http://localhost:8000")
-    print("   Tài liệu API:  http://localhost:8000/docs")
-    print("   Nhấn Ctrl+C để dừng\n")
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
 
 
 @app.get("/patients/{patient_id}")
@@ -472,8 +445,7 @@ def get_patient(patient_id: str):
             raise HTTPException(404, "Không tìm thấy bệnh nhân")
         patient = p_res.data[0]
 
-        # Lấy danh sách vết thương của bệnh nhân này
-        w_res = supabase.table("wounds")\
+        w_res  = supabase.table("wounds")\
             .select("id, wound_type, location, created_date, actual_healed_date, actual_days")\
             .eq("patient_id", patient_id)\
             .order("created_date", desc=True)\
@@ -498,7 +470,6 @@ def get_patient(patient_id: str):
 def add_visit(wound_id: str, data: WoundInput):
     """Thêm lần thăm khám mới vào vết thương đang điều trị"""
     try:
-        # Kiểm tra wound có tồn tại không
         w_res = supabase.table("wounds")\
             .select("id, actual_healed_date")\
             .eq("id", wound_id)\
@@ -508,7 +479,6 @@ def add_visit(wound_id: str, data: WoundInput):
         if w_res.data[0].get("actual_healed_date"):
             raise HTTPException(400, "Vết thương này đã lành, không thể thêm lần khám mới")
 
-        # Thêm visit mới
         supabase.table("visits").insert({
             "wound_id":          wound_id,
             "visit_date":        str(date.today()),
@@ -524,3 +494,12 @@ def add_visit(wound_id: str, data: WoundInput):
         raise
     except Exception as e:
         raise HTTPException(500, f"Lỗi thêm lần khám: {str(e)}")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    print("\n🚀 WoundAI API đang khởi động...")
+    print("   Địa chỉ local: http://localhost:8000")
+    print("   Tài liệu API:  http://localhost:8000/docs")
+    print("   Nhấn Ctrl+C để dừng\n")
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
