@@ -495,7 +495,167 @@ def add_visit(wound_id: str, data: WoundInput):
     except Exception as e:
         raise HTTPException(500, f"Lỗi thêm lần khám: {str(e)}")
 
+@app.get("/stats/dashboard")
+def dashboard_stats(period: str = "all"):
+    """Thống kê tổng quan cho dashboard"""
+    try:
+        from datetime import timedelta
 
+        # Tính ngày bắt đầu theo period
+        date_filter = None
+        if period == "month":
+            date_filter = str(date.today() - timedelta(days=30))
+        elif period == "quarter":
+            date_filter = str(date.today() - timedelta(days=90))
+        elif period == "year":
+            date_filter = str(date.today() - timedelta(days=365))
+
+        # Query wounds
+        q = supabase.table("wounds").select(
+            "id, wound_type, actual_days, created_date"
+        )
+        if date_filter:
+            q = q.gte("created_date", date_filter)
+        wounds = q.execute().data
+
+        # Query visits
+        qv = supabase.table("visits").select(
+            "nurse_type, predicted_days, actual_days:wounds(actual_days)"
+        )
+        visits_raw = supabase.table("visits")\
+            .select("id, nurse_type, wound_id, predicted_days")\
+            .execute().data
+
+        # Query wounds đã lành để tính dự báo vs thực tế
+        healed = supabase.table("wounds")\
+            .select("id, wound_type, actual_days")\
+            .not_.is_("actual_days", "null")\
+            .execute().data
+
+        # Query predictions với wound actual_days
+        predictions = supabase.table("visits")\
+            .select("predicted_days, wound_id")\
+            .not_.is_("predicted_days", "null")\
+            .execute().data
+
+        # ── Tổng quan ──
+        total_wounds   = len(wounds)
+        healed_count   = len([w for w in wounds if w["actual_days"]])
+        active_count   = total_wounds - healed_count
+
+        # Ca mới 7 ngày
+        week_ago = str(date.today() - timedelta(days=7))
+        new_week = len([w for w in wounds if w["created_date"] >= week_ago])
+
+        # ── Phân bố loại vết thương ──
+        wound_type_map = {
+            "vet_mo": "Vết mổ",
+            "loet_ap_luc": "Loét áp lực",
+            "loet_tinh_mach": "Loét tĩnh mạch",
+            "bong_do_2": "Bỏng độ II",
+        }
+        type_counts = {}
+        type_days   = {}
+        type_n      = {}
+        for w in wounds:
+            t = w["wound_type"]
+            type_counts[t] = type_counts.get(t, 0) + 1
+            if w["actual_days"]:
+                type_days[t] = type_days.get(t, 0) + w["actual_days"]
+                type_n[t]    = type_n.get(t, 0) + 1
+
+        wound_dist = [
+            {
+                "type":  t,
+                "label": wound_type_map.get(t, t),
+                "count": type_counts.get(t, 0),
+                "avg_days": round(type_days[t] / type_n[t]) if type_n.get(t) else None,
+            }
+            for t in ["loet_ap_luc", "vet_mo", "loet_tinh_mach", "bong_do_2"]
+        ]
+
+        # ── So sánh điều dưỡng ──
+        spec_days, spec_n, gen_days, gen_n = 0, 0, 0, 0
+        for v in visits_raw:
+            wound_info = next((w for w in healed if w["id"] == v["wound_id"]), None)
+            if wound_info and wound_info["actual_days"]:
+                if v["nurse_type"] == "specialist":
+                    spec_days += wound_info["actual_days"]; spec_n += 1
+                else:
+                    gen_days  += wound_info["actual_days"]; gen_n  += 1
+
+        nurse_compare = {
+            "specialist": {
+                "label":    "Điều dưỡng chuyên khoa",
+                "avg_days": round(spec_days / spec_n) if spec_n else None,
+                "count":    spec_n,
+            },
+            "general": {
+                "label":    "Điều dưỡng đa khoa",
+                "avg_days": round(gen_days / gen_n) if gen_n else None,
+                "count":    gen_n,
+            },
+        }
+
+        # ── Dự báo vs thực tế ──
+        pred_actual = []
+        for p in predictions[:200]:
+            wound_info = next((w for w in healed if w["id"] == p["wound_id"]), None)
+            if wound_info and wound_info["actual_days"] and p["predicted_days"]:
+                pred_actual.append({
+                    "predicted": p["predicted_days"],
+                    "actual":    wound_info["actual_days"],
+                    "wound_type": wound_info["wound_type"],
+                })
+
+        # MAE
+        mae = None
+        if pred_actual:
+            mae = round(sum(abs(p["predicted"] - p["actual"]) for p in pred_actual) / len(pred_actual), 1)
+
+        # Độ chính xác ±7 ngày
+        acc = None
+        if pred_actual:
+            within7 = sum(1 for p in pred_actual if abs(p["predicted"] - p["actual"]) <= 7)
+            acc = round(within7 / len(pred_actual) * 100)
+
+        # ── Feature importance (từ model) ──
+        try:
+            feat_imp = []
+            if model:
+                importances = model.feature_importances_
+                total = sum(importances)
+                for feat, imp in zip(FEATURES, importances):
+                    feat_imp.append({
+                        "feature": feat,
+                        "label":   F_LABELS.get(feat, feat),
+                        "importance": round(float(imp) / total * 100, 1),
+                    })
+                feat_imp.sort(key=lambda x: x["importance"], reverse=True)
+        except:
+            feat_imp = []
+
+        return {
+            "success": True,
+            "period":  period,
+            "overview": {
+                "total_wounds":  total_wounds,
+                "healed":        healed_count,
+                "active":        active_count,
+                "new_this_week": new_week,
+            },
+            "wound_distribution": wound_dist,
+            "nurse_compare":      nurse_compare,
+            "model_performance": {
+                "mae":          mae,
+                "accuracy_7d":  acc,
+                "pred_actual":  pred_actual[:150],
+                "feature_importance": feat_imp,
+            },
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi thống kê: {str(e)}")
+    
 if __name__ == "__main__":
     import uvicorn
     print("\n🚀 WoundAI API đang khởi động...")
