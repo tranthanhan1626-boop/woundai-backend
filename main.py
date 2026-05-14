@@ -433,6 +433,32 @@ def get_visits(wound_id: str):
         raise HTTPException(500, f"Lỗi lấy lịch sử khám: {str(e)}")
 
 
+@app.get("/patients")
+def get_patients():
+    """Lấy danh sách tất cả bệnh nhân kèm số vết thương"""
+    try:
+        patients = supabase.table("patients")\
+            .select("id, full_name, age_group, diabetes")\
+            .order("created_at", desc=True)\
+            .execute().data
+
+        wounds = supabase.table("wounds")\
+            .select("id, patient_id, actual_healed_date, created_date")\
+            .execute().data
+
+        for p in patients:
+            pw = [w for w in wounds if w["patient_id"] == p["id"]]
+            p["total_wounds"]  = len(pw)
+            p["active_wounds"] = len([w for w in pw if not w["actual_healed_date"]])
+            if pw:
+                p["last_visit"] = max(w["created_date"] for w in pw)
+            else:
+                p["last_visit"] = None
+
+        return {"success": True, "patients": patients}
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi lấy danh sách bệnh nhân: {str(e)}")
+    
 @app.get("/patients/{patient_id}")
 def get_patient(patient_id: str):
     """Tìm bệnh nhân theo ID"""
